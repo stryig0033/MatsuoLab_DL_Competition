@@ -1,16 +1,22 @@
-import re
-import random
-import time
-from statistics import mode
-
-from PIL import Image
-import numpy as np
-import pandas
-import torch
-import torch.nn as nn
-import torchvision
-from torchvision import transforms
-
+import os
+import re  # 正規表現を使用して文字列操作を行うためのライブラリ
+import random  # 乱数を生成するためのライブラリ
+import time  # 時間に関する様々な関数を提供するライブラリ
+from statistics import mode  # 基本的な統計計算を行うためのライブラリ。ここでは最頻値を計算するために使用
+from PIL import Image  # 画像処理を行うためのライブラリ（Pillow）
+import numpy as np  # 数値計算を効率的に行うためのライブラリ
+import pandas  # データ操作と分析を行うためのライブラリ
+import torch  # 機械学習ライブラリであるPyTorchの中核をなすパッケージ
+import torch.nn as nn  # PyTorchの中でニューラルネットワークの構築に必要なモジュールやレイヤー、関数を提供するパッケージ
+import torchvision  # PyTorchのコンピュータビジョン用のライブラリ
+from torchvision import transforms  # 画像データを変換するための関数を提供するサブパッケージ
+from tqdm import tqdm
+import unicodedata
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer, WordNetLemmatizer
+import nltk
+nltk.download('stopwords')
+nltk.download('wordnet')
 
 def set_seed(seed):
     random.seed(seed)
@@ -57,6 +63,23 @@ def process_text(text):
 
     # 連続するスペースを1つに変換
     text = re.sub(r'\s+', ' ', text).strip()
+
+    # 改善点①　効果なし。
+    
+    # Unicode正規化
+    # text = unicodedata.normalize('NFKD', text)
+
+    # # ストップワードの除去
+    # stop_words = set(stopwords.words('english'))
+    # text = ' '.join([word for word in text.split() if word not in stop_words])
+
+    # # ステミング
+    # stemmer = PorterStemmer()
+    # text = ' '.join([stemmer.stem(word) for word in text.split()])
+
+    # # レンマタイゼーション
+    # lemmatizer = WordNetLemmatizer()
+    # text = ' '.join([lemmatizer.lemmatize(word) for word in text.split()])
 
     return text
 
@@ -288,23 +311,31 @@ def ResNet50():
 
 
 class VQAModel(nn.Module):
-    def __init__(self, vocab_size: int, n_answer: int):
+    def __init__(self, vocab_size: int, n_answer: int): # この部分で必要な引数を指定。
         super().__init__()
-        self.resnet = ResNet18()
-        self.text_encoder = nn.Linear(vocab_size, 512)
+        self.img_encoder = ResNet50() # 改善点②
+        self.text_encoder = nn.Sequential(
+            nn.Linear(vocab_size, 756),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.5),
+            nn.Linear(756,512))# 改善点③
 
         self.fc = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(1024, 756),
+            nn.ReLU(inplace = True), 
+            nn.Dropout(p=0.5),
+            nn.Linear(756, 512), 
             nn.ReLU(inplace=True),
+            nn.Dropout(p=0.5),
             nn.Linear(512, n_answer)
-        )
+        ) # 改善点④
 
     def forward(self, image, question):
-        image_feature = self.resnet(image)  # 画像の特徴量
+        image_feature = self.img_encoder(image)  # 画像の特徴量
         question_feature = self.text_encoder(question)  # テキストの特徴量
 
-        x = torch.cat([image_feature, question_feature], dim=1)
-        x = self.fc(x)
+        x = torch.cat([image_feature, question_feature], dim=1) # 画像特徴量とテキスト特徴量の結合。 アウトプットは512+512=1024の次元数。
+        x = self.fc(x) # fcでcatによる1024次元の出力を512次元に圧縮、ReLUを入れて非線形性を導入、512次元から回答の数に対応する出力ベクトルを作成。
 
         return x
 
@@ -376,6 +407,11 @@ def main():
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     model = VQAModel(vocab_size=len(train_dataset.question2idx)+1, n_answer=len(train_dataset.answer2idx)).to(device)
+
+    # 学習済みモデルをロード
+    model_path = "model.pth"
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path), strict=False)
 
     # optimizer / criterion
     num_epoch = 20
